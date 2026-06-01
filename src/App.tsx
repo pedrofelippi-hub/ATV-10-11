@@ -1,9 +1,19 @@
-import { useState, useEffect } from 'react';
-import CartaoPersonagem from './components/CartaoPersonagem';
-import type { Personagem, ApiInfo, RespostaAPI, FiltroStatus } from './types/rickandmorty';
-import './App.css'; // Certifique-se de que seu CSS (aquele que você compartilhou) esteja aqui
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
+import type { Personagem, RespostaAPI, FiltroStatus } from './types/rickandmorty';
+import './App.css';
 
-// ─── COMPONENTE DO MODAL ──────────────────────────────────────
+// ─── HOOKS E CONTEXTOS (Desafio 9) ────────────────────────────
+import { useFetch } from './hooks/useFetch';
+import { useDebounce } from './hooks/useDebounce';
+import { useFavoritos } from './contexts/FavoritosContext';
+
+// ─── COMPONENTES SEPARADOS ────────────────────────────────────
+import CartaoPersonagem from './components/CartaoPersonagem';
+import BarraBusca from './components/BarraBusca';
+import BotoesStatus from './components/BotoesStatus';
+import Paginacao from './components/Paginacao';
+
+// ─── COMPONENTE DO MODAL (Mantido do seu código original) ─────
 interface ModalProps {
   idPersonagem: number;
   onClose: () => void;
@@ -36,10 +46,10 @@ function ModalPersonagem({ idPersonagem, onClose }: ModalProps) {
     <div className="modal ativo" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <span className="fechar-modal" onClick={onClose}>&times;</span>
-        
+
         {loading && <span className="status loading" style={{ display: 'block', textAlign: 'center' }}>⏳ Carregando detalhes...</span>}
         {erro && <span className="status erro" style={{ display: 'block', textAlign: 'center' }}>❌ {erro}</span>}
-        
+
         {detalhes && !loading && !erro && (
           <div className="modal-body-content">
             <img src={detalhes.image} alt={detalhes.name} className="modal-img" />
@@ -57,121 +67,54 @@ function ModalPersonagem({ idPersonagem, onClose }: ModalProps) {
   );
 }
 
-// ─── COMPONENTE PRINCIPAL APP ─────────────────────────────────
+// ─── COMPONENTE PRINCIPAL APP REFATORADO ──────────────────────
 function App() {
-  // Estados de dados e interface
-  const [personagens, setPersonagens] = useState<Personagem[]>([]);
-  const [info, setInfo] = useState<ApiInfo | null>(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [erro, setErro] = useState<string | null>(null);
-  
-  // Estados de paginação e filtros da API
   const [pagina, setPagina] = useState<number>(1);
   const [filtroStatus, setFiltroStatus] = useState<FiltroStatus>('all');
-  
-  // Estados para o Debounce da busca local
   const [busca, setBusca] = useState<string>('');
-  const [buscaDebounced, setBuscaDebounced] = useState<string>('');
-  
-  // Estado para controlar a exibição do Modal
   const [idPersonagemSelecionado, setIdPersonagemSelecionado] = useState<number | null>(null);
 
-  // Efeito do Debounce (atrasa a atualização da busca em 500ms)
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      setBuscaDebounced(busca);
-    }, 500);
+  // 1. Usando os novos Custom Hooks e Contexto
+  const buscaDebounced = useDebounce(busca, 400);
+  const { totalFavoritos } = useFavoritos();
+  const inputRef = useRef<HTMLInputElement>(null);
 
-    return () => clearTimeout(handler);
-  }, [busca]);
+  // 2. Fetch Automático (sem precisar de useEffect manual aqui)
+  const statusParam = filtroStatus !== 'all' ? `&status=${filtroStatus}` : '';
+  const url = `https://rickandmortyapi.com/api/character?page=${pagina}${statusParam}`;
+  const { dados, loading, erro } = useFetch<RespostaAPI>(url);
 
-  // Função principal de requisição à API
-  async function buscarPersonagens(): Promise<void> {
-    setLoading(true);
-    setErro(null);
-    
-    try {
-      const statusParam = filtroStatus !== 'all' ? `&status=${filtroStatus}` : '';
-      const url = `https://rickandmortyapi.com/api/character?page=${pagina}${statusParam}`;
-      
-      const response = await fetch(url);
-      
-      if (!response.ok) {
-        if (response.status === 404) {
-           setPersonagens([]);
-           setInfo(null);
-           return;
-        }
-        throw new Error('Falha ao buscar personagens');
-      }
-      
-      const data: RespostaAPI = await response.json();
-      setPersonagens(data.results);
-      setInfo(data.info);
-    } catch (err: any) {
-      setErro(err.message || 'Ocorreu um erro desconhecido');
-      setPersonagens([]);
-      setInfo(null);
-    } finally {
-      setLoading(false);
-    }
-  }
+  // 3. Filtro Otimizado com useMemo
+  const personagensFiltrados = useMemo(() => {
+    return (dados?.results || []).filter((p) =>
+      p.name.toLowerCase().includes(buscaDebounced.toLowerCase())
+    );
+  }, [dados, buscaDebounced]);
 
-  // Reage a mudanças de página ou filtro de status na API
-  useEffect(() => {
-    buscarPersonagens();
-  }, [pagina, filtroStatus]);
-
-  // Filtro local aplicando o valor já atrasado pelo debounce
-  const personagensFiltrados: Personagem[] = personagens.filter((p) =>
-    p.name.toLowerCase().includes(buscaDebounced.toLowerCase())
-  );
+  // 4. Callback para evitar re-renderização dos botões de status
+  const handleFiltroStatus = useCallback((s: FiltroStatus) => {
+    setFiltroStatus(s);
+    setPagina(1);
+    setBusca('');
+    inputRef.current?.focus();
+  }, []);
 
   return (
     <div className="app">
       <header className="header">
         <div>
           <h1>🧬 Painel de Personagens</h1>
-          <p className="subtitulo">Dados consumidos da Rick and Morty API</p>
+          <p className="subtitulo">useFetch + useDebounce + Context</p>
         </div>
         <div className="contador">
-          {buscaDebounced ? `${personagensFiltrados.length} personagens` : (info ? `${info.count} personagens` : '—')}
+          ❤️ {totalFavoritos} favoritos
         </div>
       </header>
 
       <div className="controles">
-        <input
-          type="text"
-          className="campo-busca"
-          id="campo-busca"
-          placeholder="🔍 Buscar por nome..."
-          autoComplete="off"
-          value={busca}
-          onChange={(e) => setBusca(e.target.value)}
-        />
-
-        <div className="filtros">
-          {(['all', 'alive', 'dead', 'unknown'] as FiltroStatus[]).map((s) => {
-            const classesExtras = 
-              s === 'alive' ? 'vivo' : 
-              s === 'dead' ? 'morto' : 
-              s === 'unknown' ? 'desconhecido' : '';
-              
-            return (
-              <button
-                key={s}
-                className={`btn-filtro ${classesExtras} ${filtroStatus === s ? 'ativo' : ''}`}
-                onClick={() => {
-                  setFiltroStatus(s);
-                  setPagina(1);
-                  setBusca('');
-                }}
-              >
-                {s === 'all' ? 'Todos' : s.charAt(0).toUpperCase() + s.slice(1)}
-              </button>
-            )
-          })}
-        </div>
+        {/* Componentes UI separados */}
+        <BarraBusca busca={busca} setBusca={setBusca} inputRef={inputRef} />
+        <BotoesStatus ativo={filtroStatus} onChange={handleFiltroStatus} />
       </div>
 
       {loading && <p className="status loading" id="status-mensagem">⏳ Carregando personagens...</p>}
@@ -184,7 +127,9 @@ function App() {
                 <CartaoPersonagem
                   key={p.id}
                   personagem={p}
-                  onClick={() => setIdPersonagemSelecionado(p.id)} 
+                  // Modificação no CartãoPersonagem da Aula 9, o onClick passa a ser na div principal do card
+                  // Mas caso você não tenha alterado, pode usar assim mesmo.
+                  onClick={() => setIdPersonagemSelecionado(p.id)}
                 />
               ))
             : <p className="vazio">Nenhum personagem encontrado.</p>
@@ -192,35 +137,14 @@ function App() {
         </div>
       )}
 
-      {info && !loading && !erro && (
-        <div className="paginacao">
-          <span className="pag-info">
-            Página {pagina} de {info.pages}
-          </span>
-          <div className="pag-botoes">
-            <button
-              className="btn-pag anterior"
-              disabled={!info.prev}
-              onClick={() => setPagina((p) => p - 1)}
-            >
-              ← Anterior
-            </button>
-            <button
-              className={`btn-pag proximo`}
-              disabled={!info.next}
-              onClick={() => setPagina((p) => p + 1)}
-            >
-              Próxima →
-            </button>
-          </div>
-        </div>
+      {dados?.info && !loading && !erro && (
+        <Paginacao info={dados.info} pagina={pagina} setPagina={setPagina} />
       )}
 
-      {/* Renderização do Modal */}
       {idPersonagemSelecionado && (
-        <ModalPersonagem 
-          idPersonagem={idPersonagemSelecionado} 
-          onClose={() => setIdPersonagemSelecionado(null)} 
+        <ModalPersonagem
+          idPersonagem={idPersonagemSelecionado}
+          onClose={() => setIdPersonagemSelecionado(null)}
         />
       )}
     </div>
